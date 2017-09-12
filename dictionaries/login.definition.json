@@ -1,0 +1,56 @@
+{
+	"otpfield": {
+		"en": "Verificaton code"
+	},
+	"chooseOTP": {
+		"en": "Would you like to use two-factor authentication based on Google Authenticator?"
+	},
+	"chooseOTPca":{
+		"en": "The option 'yes' or 'optional' may ask you to read QR code. Please prepare your mobile Google OTP app"
+	},
+	"yes": {
+		"en": "Yes"
+	},
+	"yesDesc": {
+		"en": "Always turn ON Google authentication for all service providers"
+	},
+	"no": {
+		"en": "No"
+	},
+	"noDesc": {
+		"en": "Always turn OFF Google authentication"
+	},
+	"opt": {
+		"en": "Optional"
+	},
+	"optDesc": {
+		"en": "Optionally ON only for the service provider explicitly asking 2-factor authentication (Default OFF)"
+	},
+	"next": {
+		"en": "Next"
+	},
+	"2factor_title": {
+		"en": "Configure your two-factor authentication"
+	},
+	"2factor_retitle": {
+		"en": "Reconfigure your two-factor authentication"
+	},
+	"authentication": {
+		"en": "Authentication"
+	},	
+	"qrcode": {
+		"en": "Read the QR code with Google Authenticator app, and type the verification code below"
+	},
+	"verificationcode": {
+		"en": "Type your verifying code"
+	},
+	"verificationcodeloss": {
+		"en": "Contact your IT administrator or check your past email box, if you lost your QR code or Google authenticator"
+	},
+	"2factor_login": {
+		"en": "Login with verification code."
+	},
+	"2factor_loginfail": {
+		"en": "Please enable 2FA to use this service."
+	}		
+}

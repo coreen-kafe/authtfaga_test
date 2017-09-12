@@ -1,0 +1,252 @@
+<?php
+
+/**
+ *
+ * @author Jinyong Jo, KAFE 2017-
+ * @author Tamas Frank, NIIFI
+ *
+ */
+
+// Get session object
+$session = SimpleSAML_Session::getSession();
+
+// Get the authetication state
+$authStateId = $_REQUEST['AuthState'];
+$state = SimpleSAML_Auth_State::loadState($authStateId, 'authtfaga.stage');
+assert('array_key_exists("SimpleSAML_Auth_Source.id", $state)');
+
+$authId = $state['SimpleSAML_Auth_Source.id'];
+
+$as = SimpleSAML_Configuration::getConfig('authsources.php')->getValue($authId);
+$admail = SimpleSAML_Configuration::getConfig('config.php')->getValue('technicalcontact_email');
+
+// Use 2 factor authentication class
+$gaLogin = SimpleSAML_Auth_Source::getById($authId, 'sspmod_authtfaga_Auth_Source_authtfaga');
+if ($gaLogin === null) {
+    throw new Exception('Invalid authentication source: ' . $authId);
+}
+
+/* -----------JO: enforce REFEDS MFA profile ------------ */
+$tfaConfig = SimpleSAML_Configuration::getOptionalConfig('authsources.php');
+if(!is_null($subarray = $tfaConfig->getArray('authtfaga'))) {
+	$mainsrc = $tfaConfig->getArray($subarray['mainAuthSource']);
+	isset($mainsrc['storename']) ? $cookiename = $mainsrc['storename']: $cookiename = 'tfa_cfg_enabled';
+	$userAttributes = $session->getAuthData($subarray['mainAuthSource'], 'Attributes');
+	$userMail = $userAttributes['mail'][0];
+}
+
+$userTfaConfig = false;
+if(isset($_COOKIE[$cookiename])){
+	$forceConf = $_COOKIE[$cookiename];
+	if($forceConf == 'true') $userTfaConfig = true;  //cookiename is a string
+}
+
+$tfaConfig = SimpleSAML_Configuration::getOptionalConfig('config-enforce2fa.php');
+$en2faSplist = null;
+$spEntityId = null;
+
+if(!is_null($tfaConfig)) {
+    $en2faSplist = $tfaConfig->getArray('enforce'); //array
+    $spEntityId = $state['SPMetadata']['entityid']; //string
+}
+
+$authClassRef = $state['saml:RequestedAuthnContext']['AuthnContextClassRef'];
+//$metaCategory = 
+var_dump($state['SPMetadata']);
+
+
+/*
+ *  nist 2fa $tfa_authencontextclassrefs[0]:   'urn:oasis:names:tc:SAML:2.0:post:ac:classes:nist-800-63:3'
+ *  refeds 2fa $tfa_authencontextclassrefs[1]: 'https://refeds.org/profile/mfa'
+ */
+
+$spEnforceTfa = false;
+if(isset($authClassRef)) {
+    foreach($gaLogin->tfa_authencontextclassrefs as $ccref) {
+	// is it okay?
+	if(count($authClassRef) == 1 && in_array($ccref, $authClassRef)) {
+	    $gaLogin->registerCCref($ccref);	
+	    $spEnforceTfa = true;
+	}
+    }
+}
+//don't know why it does not work with elseif. 
+if(isset($en2faSplist) && isset($spEntityId)){
+    if(in_array($spEntityId, $en2faSplist)) $spEnforceTfa = true;
+}
+
+/* -----------END: enforce REFEDS MFA profile ------------ */
+
+// Init template
+$template = 'authtfaga:login.php';
+$globalConfig = SimpleSAML_Configuration::getInstance();
+$t = new SimpleSAML_XHTML_Template($globalConfig, $template);
+
+$errorCode = null;
+
+//If user doesn't have session, force to use the main authentication method
+if (!$session->isValid($as['mainAuthSource'])) {
+    SimpleSAML_Auth_Default::initLogin($as['mainAuthSource'], SimpleSAML_Utilities::selfURL());
+}
+
+$attributes = $session->getAuthData($as['mainAuthSource'], 'Attributes');
+$state['Attributes'] = $attributes;
+
+$uid = $attributes[ $as['uidField'] ][0];
+$state['UserID'] = $uid;
+
+/* -----------JO: enforce MFA reconfiguration ------------ */
+
+$curTfaConfig = 'initial';
+if($userTfaConfig && $gaLogin->getStatus($uid) == 'update') {
+    if(isset($_POST['setEnable2f'])){
+	$gaLogin->update2fa($uid, $_POST['setEnable2f']);
+    }
+}
+$isEnabled = $gaLogin->isEnabled2fa($uid);
+
+// if get state['2faconfig'] = true from the 1fa login: if true, status is update
+if(is_null($isEnabled)) { 
+    $userTfaConfig = false;
+} else {
+    $curTfaConfig = $gaLogin->getStatus($uid);
+}
+
+if (is_null($isEnabled) || isset($_GET['postSetEnable2fa'])) {
+    //If the user has not set his preference of 2 factor authentication, redirect to settings page
+    if (isset($_POST['setEnable2f'])) {
+        $enableOption = $_POST['setEnable2f'];
+        if ($enableOption == 1  || $enableOption == 2) {
+            $gaKey = $gaLogin->createSecret();
+            $gaLogin->registerGAkey($uid, $gaKey);
+
+            $gaLogin->enable2fa($uid, $enableOption);
+            $t->data['todo'] = 'generateGA';
+            $t->data['autofocus'] = 'otp';
+            $totpIssuer = empty($as['totpIssuer']) ? 'dev_aai_teszt_IdP' : $as['totpIssuer'];
+            $t->data['qrcode'] = $gaLogin->getQRCodeGoogleUrl($totpIssuer.':'.$uid, $totpIssuer, $gaKey);
+	    $gaLogin->sendQRcode($userMail, $t->data['qrcode'], $admail);
+
+        } elseif ($enableOption == 0) {
+            $gaLogin->disable2fa($uid);
+	    $gaLogin->setStatus($uid, 'ready');
+//clear cookie
+	    \SimpleSAML\Utils\HTTP::setCookie($cookiename, NULL, array('path' => '/', 'httponly' => FALSE), FALSE);
+            SimpleSAML_Auth_Source::completeAuth($state);
+        } 
+    } else {
+        $t->data['todo'] = 'choose2enable';
+    }
+} elseif ($isEnabled == 1) { //enabled
+    //Show the second factor form
+    if (isset($_POST['otp'])) {
+        $secret = $gaLogin->getGAkeyFromUID($uid);
+        $loggedIn = $gaLogin->verifyCode($secret, $_POST['otp']);
+	
+        if ($loggedIn) {
+	    if($gaLogin->getStatus($uid) == 'update'){
+		$t->data['autofocus'] = 'otp';
+		$t->data['status'] = 'update';
+		$t->data['todo'] = 'choose2enable';
+	    } else {	
+	    	$gaLogin->setStatus($uid, 'ready');    
+            	$state['saml:AuthnContextClassRef'] = $gaLogin->tfa_authencontextclassref;
+//clear cookie
+		\SimpleSAML\Utils\HTTP::setCookie($cookiename, NULL, array('path' => '/', 'httponly' => FALSE), FALSE);
+            	SimpleSAML_Auth_Source::completeAuth($state);
+	    }
+        } else {
+            $errorCode = 'WRONGOTP';
+            $t->data['todo'] = 'loginOTP';
+        }
+    } else {
+    	if($userTfaConfig && $curTfaConfig == 'ready') {
+	    $gaLogin->setStatus($uid, 'update');
+	    $t->data['autofocus'] = 'otp';
+	    $t->data['status'] = 'update';
+	    $t->data['todo'] = 'choose2enable';
+	} else {
+	    $gaLogin->setStatus($uid, 'ready');
+            $t->data['autofocus'] = 'otp';
+            $t->data['todo'] = 'loginOTP';
+	}
+    }
+
+} elseif ($isEnabled == 2) { 
+    // optional: if SP made SAML request with setting authncontextref or IdP set SP needs 2FA.
+    if ($spEnforceTfa || $userTfaConfig) {
+    	//Show the second factor form
+    	if (isset($_POST['otp'])) {
+            $secret = $gaLogin->getGAkeyFromUID($uid);
+            $loggedIn = $gaLogin->verifyCode($secret, $_POST['otp']);
+
+            if ($loggedIn) {
+		if($gaLogin->getStatus($uid) == 'update'){
+		    $t->data['autofocus'] = 'otp';
+     		    $t->data['status'] = 'update';
+		    $t->data['todo'] = 'choose2enable';
+	    	} else {
+		    $gaLogin->setStatus($uid, 'ready');    	
+            	    $state['saml:AuthnContextClassRef'] = $gaLogin->tfa_authencontextclassref;
+//clear cookie
+		    \SimpleSAML\Utils\HTTP::setCookie($cookiename, NULL, array('path' => '/', 'httponly' => FALSE), FALSE);
+            	    SimpleSAML_Auth_Source::completeAuth($state);
+		}
+            } else {
+            	$errorCode = 'WRONGOTP';
+            	$t->data['todo'] = 'loginOTP';
+            }
+    	} else {
+	    if($userTfaConfig && $curTfaConfig == 'ready') {
+		$gaLogin->setStatus($uid, 'update');
+		$t->data['autofocus'] = 'otp';
+		$t->data['status'] = 'update';
+	    	$t->data['todo'] = 'choose2enable';
+	    } else {
+		$gaLogin->setStatus($uid, 'ready');
+   	    	$t->data['autofocus'] = 'otp';
+            	$t->data['todo'] = 'loginOTP';
+	    }
+    	}
+    }else{
+    	    // User has set up not to use 2 factor, so he is logged in
+	    $gaLogin->setStatus($uid, 'ready');
+//clear cookie
+	    \SimpleSAML\Utils\HTTP::setCookie($cookiename, NULL, array('path' => '/', 'httponly' => FALSE), FALSE);
+    	    SimpleSAML_Auth_Source::completeAuth($state);
+    }
+} else { //disabled
+    if($userTfaConfig && $curTfaConfig == 'ready'){
+	$gaLogin->remove2fa($uid);
+	$t->data['status'] = 'update';
+	$t->data['todo'] = 'choose2enable';	
+    } elseif($userTfaConfig && $curTfaConfig == 'update'){
+	$gaLogin->reset2fa($uid, 0, 'ready');
+	$gaLogin->setStatus($uid, 'ready');
+
+	$t->data['autofocus'] = 'otp';
+	$t->data['todo'] = 'loginOTP';
+//clear cookie
+	\SimpleSAML\Utils\HTTP::setCookie($cookiename, NULL, array('path' => '/', 'httponly' => FALSE), FALSE);
+    } else {
+    	// User has set up not to use 2 factor, so he is logged in
+	$gaLogin->setStatus($uid, 'ready');
+	$gaLogin->reset2fa($uid, 0, 'ready');
+
+	if($spEnforceTfa) {
+	    $errorCode = 'NOOTPSET';
+            $t->data['todo'] = 'haltAuthn';
+	} else {
+//clear cookie
+	    \SimpleSAML\Utils\HTTP::setCookie($cookiename, NULL, array('path' => '/', 'httponly' => FALSE), FALSE);
+  	    SimpleSAML_Auth_Source::completeAuth($state);
+	}
+    }
+}
+
+/* -----------END: enforce MFA reconfiguration ------------ */
+
+$t->data['stateparams'] = array('AuthState' => $authStateId);
+$t->data['errorcode'] = $errorCode;
+$t->show();
+exit();

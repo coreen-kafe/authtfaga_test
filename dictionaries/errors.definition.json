@@ -1,0 +1,14 @@
+{
+	"title_WRONGOTP": {
+		"en": "Invalid verification code!"
+	},
+	"descr_WRONGOTP": {
+		"en": "The Google Authenticator based one time password validation failed. Try again, or contact the administrators!"
+	},
+	"title_NOOTPSET": {
+		"en": "Require Two Factor Authentication!"
+	},
+	"descr_NOOTPSET": {
+		"en": "2FA is not enabled. Delete your web cache and login again to configure 2FA enabled."
+	}
+}
